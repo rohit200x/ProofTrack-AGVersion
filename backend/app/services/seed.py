@@ -125,6 +125,24 @@ def seed(db: Session) -> dict:
 
     existing = db.scalar(select(func.count()).select_from(User))
     if existing and existing > 0:
+        if s.storage_backend == "memory":
+            storage = get_storage()
+            storage.ensure_bucket()
+            proofs = db.scalars(select(DeliveryProof)).all()
+            for idx, p in enumerate(proofs):
+                if not storage.exists(p.object_key):
+                    d = db.get(Delivery, p.delivery_id)
+                    orig_buf, _, orig_size, thumb_buf, thumb_size = _render_proof_pair(
+                        d.reference if d else "PT-SEED",
+                        d.recipient_name if d else "Recipient",
+                        f"{d.address_line1}, {d.city}, {d.state}" if d else "US",
+                        p.uploaded_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    )
+                    raw_bytes = orig_buf.getvalue()
+                    storage.put(p.object_key, BytesIO(raw_bytes), content_type="image/jpeg", size=orig_size)
+                    if p.preview_key:
+                        storage.put(p.preview_key, BytesIO(raw_bytes), content_type="image/jpeg", size=orig_size)
+                    storage.put(p.thumbnail_key, thumb_buf, content_type="image/jpeg", size=thumb_size)
         log.info("seed_skip", extra={"reason": "Users already exist"})
         return {"skipped": True, "users": existing}
 

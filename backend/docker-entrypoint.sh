@@ -4,9 +4,4 @@ set -e
 echo "Applying Alembic database migrations..."
 python -m alembic upgrade head
 
-if [ "${SEED_ON_STARTUP:-false}" = "true" ] && [ "${ENVIRONMENT:-development}" != "production" ]; then
-    echo "Seeding development data (idempotent)..."
-    python -m app.cli seed
-fi
-
-exec "$@"
+exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}" --proxy-headers --forwarded-allow-ips="*"

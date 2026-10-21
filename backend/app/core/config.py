@@ -64,6 +64,16 @@ class Settings(BaseSettings):
     seed_driver_emails: str = "driver1@prooftrack.test,driver2@prooftrack.test,driver3@prooftrack.test"
     seed_password: str = "DemoPass2026!"
 
+    @field_validator("database_url", "test_database_url", mode="before")
+    @classmethod
+    def _normalize_db_url(cls, v: str) -> str:
+        val = (v or "").strip()
+        if val.startswith("postgres://"):
+            return "postgresql+psycopg://" + val[len("postgres://") :]
+        if val.startswith("postgresql://"):
+            return "postgresql+psycopg://" + val[len("postgresql://") :]
+        return val
+
     @field_validator("cors_origins", "trusted_hosts", mode="before")
     @classmethod
     def _strip(cls, v: str) -> str:
