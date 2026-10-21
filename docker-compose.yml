@@ -1,0 +1,103 @@
+# ProofTrack local development stack.
+#   cp .env.example .env
+#   docker compose up --build
+# Web app (SPA + same-origin /api proxy): http://localhost:8080
+# API docs:                                http://localhost:8080/api/docs
+# MinIO console:                           http://localhost:9011
+name: prooftrack-dev
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-prooftrack}:${POSTGRES_PASSWORD:-prooftrack}@db:5432/${POSTGRES_DB:-prooftrack}
+  S3_ENDPOINT_URL: http://minio:9000
+  S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+  S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+  STORAGE_BACKEND: s3
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-prooftrack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-prooftrack}
+      POSTGRES_DB: ${POSTGRES_DB:-prooftrack}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      # Published on loopback only so host-run tests/tools can reach it.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    # Upstream MinIO community binaries/images are archived; this is a maintained
+    # S3-compatible MinIO build. Override with MINIO_IMAGE if you prefer another.
+    image: ${MINIO_IMAGE:-pgsty/silo:RELEASE.2026-10-18T00-00-00Z}
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "127.0.0.1:${MINIO_API_HOST_PORT:-9010}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_HOST_PORT:-9011}:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  bucket-init:
+    image: ${MC_IMAGE:-pgsty/mc:RELEASE.2026-10-18T00-00-00Z}
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-prooftrack-proofs}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do sleep 2; done
+        mc mb --ignore-existing local/"$$S3_BUCKET"
+        mc anonymous set none local/"$$S3_BUCKET"
+        echo "Bucket $$S3_BUCKET ready (private)."
+    restart: "no"
+
+  backend:
+    build:
+      context: ./backend
+    env_file: .env
+    environment:
+      <<: *backend-env
+    depends_on:
+      db:
+        condition: service_healthy
+      bucket-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${BACKEND_HOST_PORT:-8001}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/health').status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${WEB_HOST_PORT:-8080}:80"
+
+volumes:
+  pg_data:
+  minio_data:
