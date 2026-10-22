@@ -1,13 +1,15 @@
 """ProofTrack FastAPI application factory and entry point."""
 
 import logging
+from pathlib import Path
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.core.config import get_settings
@@ -146,6 +148,20 @@ def create_app() -> FastAPI:
     app.include_router(dashboard_router)
     app.include_router(settings_router)
     app.include_router(health_router)
+
+    # Serve bundled React SPA if built into /app/static (single-container cloud deployment)
+    static_dir = Path("/app/static")
+    if (static_dir / "index.html").is_file():
+        assets_dir = static_dir / "assets"
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def serve_spa(full_path: str):
+            candidate = (static_dir / full_path).resolve()
+            if full_path and candidate.is_file() and str(candidate).startswith(str(static_dir.resolve())):
+                return FileResponse(candidate)
+            return FileResponse(static_dir / "index.html")
 
     return app
 
